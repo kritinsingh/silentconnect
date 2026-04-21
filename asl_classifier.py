@@ -21,10 +21,11 @@ class ASLClassifier:
         else:
             print(f"Warning: Model file '{self.model_path}' not found. Classifier will return 'Uninitialized'.")
 
-    def classify(self, landmarks, handedness="Right"):
+    def classify(self, landmarks, w=1.0, h=1.0, handedness="Right"):
         """
         Classifies the hand landmarks using the trained model.
         landmarks: List of landmarks (objects with x, y attributes).
+        w, h: Width and height of the image to ensure aspect-ratio invariant features.
         handedness: "Right" or "Left" (Not used in this ML model version, but kept for interface).
         Returns: String (Letter/Number) or "Unknown"/"Uninitialized"
         """
@@ -35,25 +36,22 @@ class ASLClassifier:
                 return "Uninitialized"
 
         data_aux = []
-        x_ = []
-        y_ = []
 
+        # 1. Translate to wrist
+        base_px, base_py = landmarks[0].x * w, landmarks[0].y * h
+        temp_landmarks = []
+        
         for lm in landmarks:
-            x_.append(lm.x)
-            y_.append(lm.y)
-
-        for lm in landmarks:
-             # Normalize relative to min/max? 
-             # The training data was collected as RAW (x, y). 
-             # Wait, in collect_data.py I saved RAW (x, y).
-             # Efficient models usually benefit from normalization, 
-             # but if I trained on raw, I must predict on raw.
-             # Actually, raw coordinates from MediaPipe are already normalized [0, 1].
-             # So they are fine as is, provided the camera aspect ratio doesn't distort them heavily.
-             # Let's match whatever collect_data.py did.
-             
-             # collect_data.py did: landmark_list.extend([lm.x, lm.y])
-             data_aux.extend([lm.x, lm.y])
+            temp_landmarks.append((lm.x * w - base_px, lm.y * h - base_py))
+            
+        # 2. Scale by absolute max distance
+        max_val = max(max(abs(x), abs(y)) for x, y in temp_landmarks)
+        if max_val == 0:
+            max_val = 1.0 # prevent division by zero
+            
+        # Normalize and flatten
+        for x, y in temp_landmarks:
+            data_aux.extend([x / max_val, y / max_val])
 
         # Prediction
         try:

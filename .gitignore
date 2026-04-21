@@ -1,4 +1,8 @@
-
 .venv/
 __pycache__/
 *.pyc
+*.p
+*-KRITIN.*
+*_backup.csv
+*_full.csv
+Dataset_Visualization/

@@ -37,9 +37,9 @@ def collect_data():
         base_options=BaseOptions(model_asset_path=MODEL_PATH),
         running_mode=VisionRunningMode.VIDEO,
         num_hands=1,
-        min_hand_detection_confidence=0.5,
-        min_hand_presence_confidence=0.5,
-        min_tracking_confidence=0.5
+        min_hand_detection_confidence=0.3,
+        min_hand_presence_confidence=0.3,
+        min_tracking_confidence=0.3
     )
 
     try:
@@ -110,10 +110,21 @@ def collect_data():
                 # Draw Points & Save Data
                 # Note: We only save ONE hand per frame (the first one)
                 if not current_landmarks_list:
+                    base_px, base_py = hand_landmarks[0].x * w, hand_landmarks[0].y * h
+                    temp_landmarks = []
+                    
                     for lm in hand_landmarks:
                         cx, cy = int(lm.x * w), int(lm.y * h)
                         cv2.circle(image, (cx, cy), 4, (0, 0, 255), -1)
-                        current_landmarks_list.extend([lm.x, lm.y])
+                        temp_landmarks.append((lm.x * w - base_px, lm.y * h - base_py))
+                        
+                    # Max absolute scale for normalization
+                    max_val = max(max(abs(x), abs(y)) for x, y in temp_landmarks)
+                    if max_val == 0:
+                        max_val = 1.0 # prevent division by zero
+                        
+                    for x, y in temp_landmarks:
+                        current_landmarks_list.extend([x / max_val, y / max_val])
 
         # UI Overlay
         status_color = (0, 255, 0) if not is_recording else (0, 0, 255)

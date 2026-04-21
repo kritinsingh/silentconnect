@@ -22,9 +22,9 @@ def main():
             base_options=BaseOptions(model_asset_path='gesture_recognizer.task'),
             running_mode=VisionRunningMode.VIDEO,
             num_hands=1,
-            min_hand_detection_confidence=0.5,
-            min_hand_presence_confidence=0.5,
-            min_tracking_confidence=0.5
+            min_hand_detection_confidence=0.3,
+            min_hand_presence_confidence=0.3,
+            min_tracking_confidence=0.3
         )
         recognizer = GestureRecognizer.create_from_options(options)
     except Exception as e:
@@ -57,6 +57,9 @@ def main():
     # State Variables
     start_time = time.time()
     current_word = ""
+    recognition_modes = ["All", "Digit", "Character", "Word"]
+    current_mode_idx = 0
+    current_mode = recognition_modes[current_mode_idx]
     last_added_letter = ""
     last_stable_letter = "..."
     prediction_history = deque(maxlen=10)
@@ -116,8 +119,15 @@ def main():
                     points.append(px)
                 
                 # Draw Connections (Neon Style)
-                mp_hands = mp.solutions.hands
-                connections = mp_hands.HAND_CONNECTIONS
+                # mp_hands = mp.solutions.hands  <-- caused AttributeError
+                # connections = mp_hands.HAND_CONNECTIONS
+                connections = frozenset([
+                    (0, 1), (1, 2), (2, 3), (3, 4),
+                    (0, 5), (5, 6), (6, 7), (7, 8),
+                    (5, 9), (9, 10), (10, 11), (11, 12),
+                    (9, 13), (13, 14), (14, 15), (15, 16),
+                    (13, 17), (0, 17), (17, 18), (18, 19), (19, 20)
+                ])
                 for connection in connections:
                     start_idx = connection[0]
                     end_idx = connection[1]
@@ -129,11 +139,22 @@ def main():
                     cv2.circle(overlay, px, 8, COLOR_ACCENT, -1)
                     cv2.circle(img, px, 4, (255, 255, 255), -1)
 
-                # Bounding Box
+                # Bounding Box (Cornered)
                 x_vals = [p[0] for p in points]
                 y_vals = [p[1] for p in points]
-                bbox = (min(x_vals)-20, min(y_vals)-20, max(x_vals)+20, max(y_vals)+20)
-                cv2.rectangle(overlay, (bbox[0], bbox[1]), (bbox[2], bbox[3]), COLOR_ACCENT, 2)
+                x_min, y_min = min(x_vals)-30, min(y_vals)-30
+                x_max, y_max = max(x_vals)+30, max(y_vals)+30
+                
+                length = 20
+                thick = 4
+                cv2.line(overlay, (x_min, y_min), (x_min + length, y_min), COLOR_ACCENT, thick)
+                cv2.line(overlay, (x_min, y_min), (x_min, y_min + length), COLOR_ACCENT, thick)
+                cv2.line(overlay, (x_max, y_min), (x_max - length, y_min), COLOR_ACCENT, thick)
+                cv2.line(overlay, (x_max, y_min), (x_max, y_min + length), COLOR_ACCENT, thick)
+                cv2.line(overlay, (x_min, y_max), (x_min + length, y_max), COLOR_ACCENT, thick)
+                cv2.line(overlay, (x_min, y_max), (x_min, y_max - length), COLOR_ACCENT, thick)
+                cv2.line(overlay, (x_max, y_max), (x_max - length, y_max), COLOR_ACCENT, thick)
+                cv2.line(overlay, (x_max, y_max), (x_max, y_max - length), COLOR_ACCENT, thick)
                 
                 # Classify
                 handedness_label = "Right" # Default
@@ -141,18 +162,37 @@ def main():
                      if len(recognition_result.handedness) > 0:
                          handedness_label = recognition_result.handedness[0][0].category_name
                 
-        raw_letter = asl_classifier.classify(hand_landmarks, handedness_label)
+                # Classify
+                raw_letter = asl_classifier.classify(hand_landmarks, w, h, handedness_label)
         
-        if raw_letter == "Uninitialized":
-             cv2.putText(img, "MODEL NOT TRAINED", (w//2 - 200, h//2), cv2.FONT_HERSHEY_SIMPLEX, 1.5, (0, 0, 255), 3)
-             cv2.putText(img, "Run 'collect_data.py' then 'train_classifier.py'", (w//2 - 350, h//2 + 50), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2)
-
+                if raw_letter == "Uninitialized":
+                     cv2.putText(img, "MODEL NOT TRAINED", (w//2 - 200, h//2), cv2.FONT_HERSHEY_SIMPLEX, 1.5, (0, 0, 255), 3)
+                     cv2.putText(img, "Run 'collect_data.py' then 'train_classifier.py'", (w//2 - 350, h//2 + 50), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2)
         # Blend Overlay
         alpha = 0.6
         img = cv2.addWeighted(overlay, alpha, img, 1 - alpha, 0)
 
         # Smoothing & Logic
+        if current_mode == "Digit" and raw_letter == "V":
+            raw_letter = "2"
+        elif current_mode in ["Character", "Word"] and raw_letter == "2":
+            raw_letter = "V"
+            
+        is_valid = False
         if raw_letter not in ["Unknown", "None", "Uninitialized", "Error"]:
+             if current_mode == "All":
+                 is_valid = True
+             elif current_mode == "Digit" and raw_letter.isdigit():
+                 is_valid = True
+             elif current_mode == "Character" and len(raw_letter) == 1 and raw_letter.isalpha():
+                 is_valid = True
+             elif current_mode == "Word" and len(raw_letter) > 1 and raw_letter.isalpha():
+                 is_valid = True
+             
+             if "Space" in raw_letter:
+                 is_valid = True 
+
+        if is_valid:
             prediction_history.append(raw_letter)
         else:
              if sign_gesture != "None":
@@ -198,31 +238,47 @@ def main():
              current_hold_count = 0
              display_color = COLOR_TEXT
 
-        # UI Layout
-        # Top Header
-        cv2.rectangle(img, (0, 0), (w, 80), (0, 0, 0), -1)
-        cv2.putText(img, "ASL DECODER", (20, 50), cv2.FONT_HERSHEY_SIMPLEX, 1, COLOR_ACCENT, 2)
+        # UI Layout Helpers
+        def draw_text(image, text, pos, font_scale, color, thickness=2):
+            cv2.putText(image, text, (pos[0]+2, pos[1]+2), cv2.FONT_HERSHEY_DUPLEX, font_scale, (0,0,0), thickness+1)
+            cv2.putText(image, text, pos, cv2.FONT_HERSHEY_DUPLEX, font_scale, color, thickness)
+
+        # Transparent Overlays
+        overlay_ui = img.copy()
+        # Top Header (Reduced size)
+        cv2.rectangle(overlay_ui, (0, 0), (w, 60), (15, 15, 15), -1)
+        cv2.rectangle(overlay_ui, (0, 60), (w, 62), COLOR_ACCENT, -1)
+        # Bottom Text Area (Reduced size)
+        cv2.rectangle(overlay_ui, (0, h-60), (w, h), (20, 20, 25), -1)
+        cv2.rectangle(overlay_ui, (0, h-60), (w, h-58), COLOR_ACCENT, -1)
         
-        # Current Letter Box
-        cv2.circle(img, (w//2, 100), 60, (0, 0, 0), -1)
-        cv2.circle(img, (w//2, 100), 55, display_color, 2)
-        text_size = cv2.getTextSize(last_stable_letter, cv2.FONT_HERSHEY_SIMPLEX, 2, 3)[0]
-        cv2.putText(img, last_stable_letter, (w//2 - text_size[0]//2, 115), cv2.FONT_HERSHEY_SIMPLEX, 2, display_color, 3)
+        alpha_ui = 0.8
+        img = cv2.addWeighted(overlay_ui, alpha_ui, img, 1 - alpha_ui, 0)
 
-        # Bottom Text Area
-        cv2.rectangle(img, (0, h-100), (w, h), (20, 20, 20), -1)
-        cv2.putText(img, current_word + "|", (30, h-40), cv2.FONT_HERSHEY_SIMPLEX, 1.5, COLOR_TEXT, 2)
+        # Header Text (Removed ASL DECODER)
+        draw_text(img, f"MODE: [{current_mode}]", (w - 300, 30), 0.6, (0, 255, 0), 2)
+        draw_text(img, "Press 'm' to change", (w - 300, 50), 0.4, (200, 200, 200), 1)
 
-        # Autocorrect Suggestion (Top Right)
+        # Current Letter Box (Center) (Reduced size)
+        cx, cy = w // 2, 90
+        cv2.circle(img, (cx, cy), 45, (20, 20, 20), -1)
+        cv2.circle(img, (cx, cy), 45, display_color, 3)
+        cv2.circle(img, (cx, cy), 38, display_color, 1)
+        
+        text_size = cv2.getTextSize(last_stable_letter, cv2.FONT_HERSHEY_DUPLEX, 1.8, 3)[0]
+        cv2.putText(img, last_stable_letter, (cx - text_size[0]//2, cy + text_size[1]//2 - 5), cv2.FONT_HERSHEY_DUPLEX, 1.8, display_color, 3)
+
+        # Autocorrect Suggestion (Above Footer)
         if current_word.strip():
             last_word = current_word.split(" ")[-1]
             if last_word:
                 correction = spell.correction(last_word)
                 if correction and correction != last_word:
-                    cv2.putText(img, f"Did you mean: {correction}?", (w-400, 50), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (100, 255, 100), 2)
-                    
-                    # Auto-replace on specific gesture? 
-                    # For now just show suggestion.
+                    draw_text(img, f"Suggestion: {correction} (?)", (30, h-75), 0.7, (100, 255, 255), 2)
+
+        # Bottom Text Area
+        cursor = "_" if (int(time.time() * 2) % 2) == 0 else " "
+        draw_text(img, current_word + cursor, (40, h-20), 1.0, COLOR_TEXT, 2)
 
         # Speak Button (Virtual) / Gesture
         # If "Thumb_Up" gesture is recognized, speak the word
@@ -233,8 +289,12 @@ def main():
              current_word = "" # Clear after speaking? Optional.
         
         cv2.imshow("ASL Recognizer", img)
-        if cv2.waitKey(1) & 0xFF == ord('q'):
+        key = cv2.waitKey(1) & 0xFF
+        if key == ord('q'):
             break
+        elif key == ord('m'):
+            current_mode_idx = (current_mode_idx + 1) % len(recognition_modes)
+            current_mode = recognition_modes[current_mode_idx]
 
     cap.release()
     cv2.destroyAllWindows()
