@@ -33,14 +33,8 @@ def main():
 
     asl_classifier = ASLClassifier()
     
-    # Initialize TTS Engine (in a separate thread? No, just init here)
-    try:
-        engine = pyttsx3.init()
-        # Set properties (optional)
-        engine.setProperty('rate', 150) 
-    except Exception as e:
-        print(f"TTS Init Failed: {e}")
-        engine = None
+    # We will initialize TTS locally in the thread to avoid Windows COM threading crashes
+    engine = None
 
     spell = SpellChecker()
 
@@ -64,9 +58,15 @@ def main():
     last_stable_letter = "..."
     prediction_history = deque(maxlen=10)
     
-    REQUIRED_STABILITY = 8 
-    WORD_ADD_DELAY = 30 # Frames
+    REQUIRED_STABILITY = 6 
+    WORD_ADD_DELAY = 10 # Frames
     current_hold_count = 0
+    no_hand_count = 0
+    
+    last_speak_time = 0
+    last_delete_time = 0
+    cached_last_word = ""
+    cached_correction = ""
     
     # UI Colors (Neon / Cyberpunk)
     COLOR_BG = (10, 10, 30) # Dark Blue/Black
@@ -75,12 +75,14 @@ def main():
     COLOR_HAND = (255, 0, 255) # Magenta
     
     def speak_text(text):
-        if engine:
-            try:
-                engine.say(text)
-                engine.runAndWait()
-            except:
-                pass
+        try:
+            import pyttsx3
+            local_engine = pyttsx3.init()
+            local_engine.setProperty('rate', 150)
+            local_engine.say(text)
+            local_engine.runAndWait()
+        except:
+            pass
 
     def speak_async(text):
         threading.Thread(target=speak_text, args=(text,), daemon=True).start()
@@ -107,6 +109,7 @@ def main():
         overlay = img.copy()
         
         if recognition_result.hand_landmarks:
+            no_hand_count = 0
             if recognition_result.gestures:
                 top_gesture = recognition_result.gestures[0][0]
                 sign_gesture = top_gesture.category_name 
@@ -173,6 +176,17 @@ def main():
         img = cv2.addWeighted(overlay, alpha, img, 1 - alpha, 0)
 
         # Smoothing & Logic
+        
+        # Prevent false letters when doing system actions & Map Open_Palm to Space
+        if sign_gesture == "ILoveYou":
+            raw_letter = "None"
+        elif sign_gesture == "Thumb_Down":
+            raw_letter = "None"
+        elif sign_gesture == "Thumb_Up" and current_mode not in ["Digit", "All"]:
+            raw_letter = "None"
+        elif sign_gesture == "Open_Palm":
+            raw_letter = "Space"
+            
         if current_mode == "Digit" and raw_letter == "V":
             raw_letter = "2"
         elif current_mode in ["Character", "Word"] and raw_letter == "2":
@@ -189,7 +203,7 @@ def main():
              elif current_mode == "Word" and len(raw_letter) > 1 and raw_letter.isalpha():
                  is_valid = True
              
-             if "Space" in raw_letter:
+             if "Space" in raw_letter or "Delete" in raw_letter:
                  is_valid = True 
 
         if is_valid:
@@ -224,7 +238,7 @@ def main():
                        
                        if "Space" in last_stable_letter:
                             current_word += " "
-                       elif "Delete" in sign_gesture: # Gesture override
+                       elif "Delete" in last_stable_letter:
                             current_word = current_word[:-1]
                        else:
                             current_word += char_to_add
@@ -237,6 +251,12 @@ def main():
         else:
              current_hold_count = 0
              display_color = COLOR_TEXT
+             
+             # Only reset last_added_letter if hand is fully gone for 15 frames (~0.5s)
+             if not recognition_result.hand_landmarks:
+                 no_hand_count += 1
+                 if no_hand_count > 15:
+                     last_added_letter = ""
 
         # UI Layout Helpers
         def draw_text(image, text, pos, font_scale, color, thickness=2):
@@ -268,25 +288,38 @@ def main():
         text_size = cv2.getTextSize(last_stable_letter, cv2.FONT_HERSHEY_DUPLEX, 1.8, 3)[0]
         cv2.putText(img, last_stable_letter, (cx - text_size[0]//2, cy + text_size[1]//2 - 5), cv2.FONT_HERSHEY_DUPLEX, 1.8, display_color, 3)
 
-        # Autocorrect Suggestion (Above Footer)
-        if current_word.strip():
-            last_word = current_word.split(" ")[-1]
-            if last_word:
-                correction = spell.correction(last_word)
-                if correction and correction != last_word:
-                    draw_text(img, f"Suggestion: {correction} (?)", (30, h-75), 0.7, (100, 255, 255), 2)
+        # Autocorrect Suggestion (Removed as requested)
+        pass
 
         # Bottom Text Area
         cursor = "_" if (int(time.time() * 2) % 2) == 0 else " "
         draw_text(img, current_word + cursor, (40, h-20), 1.0, COLOR_TEXT, 2)
 
-        # Speak Button (Virtual) / Gesture
-        # If "Thumb_Up" gesture is recognized, speak the word
-        if sign_gesture == "Thumb_Up":
+        # Handle MediaPipe Gestures (Speak / Delete) - Uniform across all modes
+        # We exclusively use 'ILoveYou' for speaking to avoid conflict with '6' (Thumb_Up)
+        if sign_gesture == "ILoveYou" and (time.time() - last_speak_time) > 2.0:
              speak_async(current_word)
-             sign_gesture = "None" # Debounce
-             time.sleep(1.0)
-             current_word = "" # Clear after speaking? Optional.
+             last_speak_time = time.time()
+             # Flash green or blue to indicate speaking
+             cv2.rectangle(img, (0, 0), (w, h), (255, 255, 0), 10)
+             
+        # Thumb_Up to delete the last word or clear sentence if only one word (Disabled in Digit/All modes)
+        elif sign_gesture == "Thumb_Up" and current_mode not in ["Digit", "All"] and (time.time() - last_delete_time) > 1.0:
+             words = current_word.rstrip().split(" ")
+             if len(words) > 1:
+                 current_word = " ".join(words[:-1]) + " "
+             else:
+                 current_word = ""
+             last_delete_time = time.time()
+             # Visual feedback for word delete (Orange flash)
+             cv2.rectangle(img, (0, 0), (w, h), (0, 165, 255), 15)
+        
+        # Thumb_Down is not a number, so it's safe to use for delete in all modes
+        elif sign_gesture == "Thumb_Down" and (time.time() - last_delete_time) > 0.5:
+             current_word = current_word[:-1]
+             last_delete_time = time.time()
+             # Visual feedback for delete
+             cv2.rectangle(img, (0, 0), (w, h), (0, 0, 255), 10)
         
         cv2.imshow("ASL Recognizer", img)
         key = cv2.waitKey(1) & 0xFF
